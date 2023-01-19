@@ -58,9 +58,11 @@ pub type Result<T> = std::result::Result<T, WaitObjectError>;
 #[derive(Clone)]
 pub struct WaitEvent<T>(Arc<(Mutex<T>, Condvar)>);
 
+/// Wrapper of [`WaitEvent`] of type `bool`, which focuses on waiting for `true` without resetting.
 #[derive(Clone)]
 pub struct ManualResetEvent(WaitEvent<bool>);
 
+/// Wrapper of [`WaitEvent`] of type `bool`, which focuses on waiting for `true` with automatic reset to `false`.
 #[derive(Clone)]
 pub struct AutoResetEvent(WaitEvent<bool>);
 
@@ -89,7 +91,7 @@ impl<T> WaitEvent<T> {
         }
     }
 
-    fn wait_with_waiter(&self, mut checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool) -> Result<MutexGuard<T>> {
+    pub fn wait_with_waiter(&self, mut checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool) -> Result<MutexGuard<T>> {
         let (lock, cond) = self.0.deref();
         let mut state = lock.lock()?;
         while waiter() && !checker(&*state) {
@@ -98,16 +100,18 @@ impl<T> WaitEvent<T> {
         Ok(state)
     }
 
-    fn wait_and_reset_with_waiter(&self, checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool, mut reset: impl FnMut() -> T) -> Result<T> {
+    pub fn wait_and_reset_with_waiter(&self, checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool, mut reset: impl FnMut() -> T) -> Result<T> {
         let state = self.wait_with_waiter(checker, waiter);
         state.map(|mut g| mem::replace(g.deref_mut(), reset()))
     }
 
-    fn waiter(timeout: Duration) -> impl Fn() -> bool {
+    pub fn waiter(timeout: Duration) -> impl Fn() -> bool {
         let start = time::Instant::now();
         move || { (time::Instant::now() - start) < timeout }
     }
-    fn no_waiter() -> impl Fn() -> bool { || true }
+
+    #[inline]
+    pub fn no_waiter() -> impl Fn() -> bool { || true }
 
     pub fn set_state(&mut self, new_state: T) -> Result<()> {
         let (lock, cond) = self.0.deref();
@@ -146,8 +150,65 @@ impl ManualResetEvent {
     }
 }
 
+impl AutoResetEvent {
+    #[inline]
+    pub fn new() -> Self { Self::new_init(false) }
+    #[inline]
+    pub fn new_init(initial_state: bool) -> Self {
+        Self(WaitEvent::new_init(initial_state))
+    }
+
+    #[inline]
+    pub fn wait_until_set(&self) -> Result<bool> {
+        self.0.wait_reset(None, || false, |v| *v)
+    }
+
+    #[inline] pub fn wait_one(&self, timeout: Duration) -> Result<bool> {
+        self.0.wait_reset(Some(timeout), || false, |v| *v)
+    }
+
+    #[inline]
+    pub fn reset(&mut self) -> Result<()> {
+        self.0.set_state(false)
+    }
+
+    #[inline]
+    pub fn set(&mut self) -> Result<()> {
+        self.0.set_state(true)
+    }
+}
+
 impl<T> From<std::sync::PoisonError<T>> for WaitObjectError {
     fn from(_value: std::sync::PoisonError<T>) -> Self {
         Self::SynchronizationBroken
     }
 }
+
+mod conversion {
+    use super::{ WaitEvent, ManualResetEvent, AutoResetEvent };
+
+    impl From<WaitEvent<bool>> for ManualResetEvent {
+        fn from(value: WaitEvent<bool>) -> Self {
+            Self(value)
+        }
+    }
+
+    impl From<ManualResetEvent> for WaitEvent<bool> {
+        fn from(value: ManualResetEvent) -> Self {
+            value.0
+        }
+    }
+
+    impl From<WaitEvent<bool>> for AutoResetEvent {
+        fn from(value: WaitEvent<bool>) -> Self {
+            Self(value)
+        }
+    }
+
+    impl From<AutoResetEvent> for WaitEvent<bool> {
+        fn from(value: AutoResetEvent) -> Self {
+            value.0
+        }
+    }
+}
+pub use conversion::*;
