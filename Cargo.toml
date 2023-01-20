@@ -1,7 +1,17 @@
 [package]
 name = "sync-wait-object"
+authors = ["Ruxo Zheng <me@ruxoz.net>"]
 version = "0.1.0"
 edition = "2021"
+
+description = "Synchronous Wait Object (abstraction over Mutex & CondVar)"
+license = "MIT"
+readme = "README.md"
+homepage = "https://docs.rs/sync-wait-object"
+documentation = "https://docs.rs/sync-wait-object"
+repository = "https://github.com/ruxo/sync-wait-object"
+keywords = ["native", "sync", "wait-object"]
+categories = ["concurrency", "os::windows-apis"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

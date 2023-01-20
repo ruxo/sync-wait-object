@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::{time, time::Duration, ops::Deref, sync::{Arc, Condvar, Mutex, MutexGuard}, mem};
 use std::ops::DerefMut;
 
@@ -5,13 +7,16 @@ use std::ops::DerefMut;
 pub mod windows;
 
 // ------------------------------ DATA TYPES ----------------------------------
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum WaitObjectError {
     /// OS error code with its description. This error code is only when using APIs based on OS.
     OsError(isize, String),
 
     /// Meaning a sync object gets broken (or poisoned) due to panic!()
-    SynchronizationBroken
+    SynchronizationBroken,
+
+    /// Wait is timed out
+    Timeout
 }
 
 pub type Result<T> = std::result::Result<T, WaitObjectError>;
@@ -22,7 +27,7 @@ pub type Result<T> = std::result::Result<T, WaitObjectError>;
 ///
 /// There are two ways to wait. The first is just to want until an expected value.
 ///
-/// ```rust
+/// ```rust, no_run
 /// # use sync_wait_object::WaitEvent;
 /// use std::thread;
 /// let wait3 = WaitEvent::new_init(0);
@@ -42,7 +47,7 @@ pub type Result<T> = std::result::Result<T, WaitObjectError>;
 /// ```
 ///
 /// The second is to wait and then reset the value to a desired state.
-/// ```rust
+/// ```rust, no_run
 /// # use sync_wait_object::WaitEvent;
 /// use std::thread;
 /// let wait3 = WaitEvent::new_init(0);
@@ -91,41 +96,91 @@ impl<T> WaitEvent<T> {
         self.0.0.lock().map_err(|e| e.into())
     }
 
+    /// Wait until the `checker` returns true, or timed-out from `timeout`.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Maximum wait time
+    /// * `checker` - Checker function, once it returns `true`, the wait ends
     pub fn wait(&self, timeout: Option<Duration>, checker: impl FnMut(&T) -> bool) -> Result<MutexGuard<T>> {
         match timeout {
-            Some(t) => self.wait_with_waiter(checker, Self::waiter(t)),
-            None => self.wait_with_waiter(checker, Self::no_waiter())
+            Some(_) => self.wait_with_waiter(timeout, checker),
+            None => self.wait_with_waiter(timeout, checker)
         }
     }
 
+    /// Wait until the `checker` returns true, or timed-out from `timeout`. If the wait ends from `checker` condition, the interval value is reset by `reset`.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Maximum wait time
+    /// * `reset` - Function that provides a reset value
+    /// * `checker` - Checker function, once it returns `true`, the wait ends
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use std::{thread, time::Duration};
+    /// use sync_wait_object::{WaitEvent, WaitObjectError};
+    ///
+    /// let wait3 = WaitEvent::new_init(0);
+    /// let mut wait_handle = wait3.clone();
+    ///
+    /// thread::spawn(move || {
+    ///     for i in 1..=3 {
+    ///         thread::sleep(Duration::from_millis(50));
+    ///         wait_handle.set_state(i).unwrap();
+    ///     }
+    /// });
+    ///
+    /// let timeout = Duration::from_millis(250);
+    /// let r#final = wait3.wait_reset(Some(timeout), || 0, |i| *i == 5);
+    /// let current = *wait3.value().unwrap();
+    /// assert_eq!(r#final, Err(WaitObjectError::Timeout));
+    /// assert_eq!(current, 3);
+    /// ```
     pub fn wait_reset(&self, timeout: Option<Duration>, reset: impl FnMut() -> T, checker: impl FnMut(&T) -> bool) -> Result<T> {
         match timeout {
-            Some(t) => self.wait_and_reset_with_waiter(checker, Self::waiter(t), reset),
-            None => self.wait_and_reset_with_waiter(checker, Self::no_waiter(), reset)
+            Some(_) => self.wait_and_reset_with_waiter(timeout, checker, reset),
+            None => self.wait_and_reset_with_waiter(timeout, checker, reset)
         }
     }
 
-    pub fn wait_with_waiter(&self, mut checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool) -> Result<MutexGuard<T>> {
+    pub fn wait_with_waiter(&self, timeout: Option<Duration>, mut checker: impl FnMut(&T) -> bool) -> Result<MutexGuard<T>> {
         let (lock, cond) = self.0.deref();
         let mut state = lock.lock()?;
-        while waiter() && !checker(&*state) {
-            state = cond.wait(state)?;
+        let waiter = Self::create_waiter(timeout);
+        let mut continue_wait = waiter();
+        let mut pass = checker(&*state);
+        while continue_wait && !pass {
+            state = match timeout {
+                Some(t) => {
+                    let (g, _) = cond.wait_timeout(state, t)?;
+                    g
+                },
+                None => cond.wait(state)?
+            };
+            continue_wait = waiter();
+            pass = checker(&*state);
         }
-        Ok(state)
+        if pass { Ok(state) }
+        else { Err(WaitObjectError::Timeout) }
     }
 
-    pub fn wait_and_reset_with_waiter(&self, checker: impl FnMut(&T) -> bool, waiter: impl Fn() -> bool, mut reset: impl FnMut() -> T) -> Result<T> {
-        let state = self.wait_with_waiter(checker, waiter);
+    pub fn wait_and_reset_with_waiter(&self, timeout: Option<Duration>, checker: impl FnMut(&T) -> bool, mut reset: impl FnMut() -> T) -> Result<T> {
+        let state = self.wait_with_waiter(timeout, checker);
         state.map(|mut g| mem::replace(g.deref_mut(), reset()))
     }
 
-    pub fn waiter(timeout: Duration) -> impl Fn() -> bool {
+    fn create_waiter(timeout: Option<Duration>) -> impl Fn() -> bool {
         let start = time::Instant::now();
-        move || { (time::Instant::now() - start) < timeout }
+        move || {
+            match timeout {
+                Some(t) => (time::Instant::now() - start) < t,
+                None => true
+            }
+        }
     }
-
-    #[inline]
-    pub fn no_waiter() -> impl Fn() -> bool { || true }
 
     pub fn set_state(&mut self, new_state: T) -> Result<()> {
         let (lock, cond) = self.0.deref();
@@ -172,7 +227,7 @@ impl AutoResetEvent {
     pub fn new() -> Self { Self::new_init(false) }
 
     #[inline]
-    fn new_init(initial_state: bool) -> Self {
+    pub fn new_init(initial_state: bool) -> Self {
         Self(WaitEvent::new_init(initial_state))
     }
 }
