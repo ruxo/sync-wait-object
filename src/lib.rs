@@ -1,9 +1,15 @@
 use std::{time, time::Duration, ops::Deref, sync::{Arc, Condvar, Mutex, MutexGuard}, mem};
 use std::ops::DerefMut;
 
-// ------------------------------ DATA STRUCTURE ------------------------------
+#[cfg(windows)]
+pub mod windows;
+
+// ------------------------------ DATA TYPES ----------------------------------
 #[derive(Debug)]
 pub enum WaitObjectError {
+    /// OS error code with its description. This error code is only when using APIs based on OS.
+    OsError(isize, String),
+
     /// Meaning a sync object gets broken (or poisoned) due to panic!()
     SynchronizationBroken
 }
@@ -66,6 +72,14 @@ pub struct ManualResetEvent(WaitEvent<bool>);
 #[derive(Clone)]
 pub struct AutoResetEvent(WaitEvent<bool>);
 
+// Boolean signal with ability to wait and set state.
+pub trait SignalWaitable {
+    fn wait_until_set(&self) -> Result<bool>;
+    fn wait(&self, timeout: Duration) -> Result<bool>;
+    fn set(&mut self) -> Result<()>;
+    fn reset(&mut self) -> Result<()>;
+}
+
 // ------------------------------ IMPLEMENTATIONS ------------------------------
 impl<T> WaitEvent<T> {
     #[inline]
@@ -125,56 +139,62 @@ impl<T> WaitEvent<T> {
 impl ManualResetEvent {
     #[inline]
     pub fn new() -> Self { Self::new_init(false) }
+
     #[inline]
     pub fn new_init(initial_state: bool) -> Self {
         Self(WaitEvent::new_init(initial_state))
     }
+}
 
+impl SignalWaitable for ManualResetEvent {
     #[inline]
-    pub fn wait_until_set(&self) -> Result<bool> {
+    fn wait_until_set(&self) -> Result<bool> {
         self.0.wait(None, |v| *v).map(|g| *g)
     }
 
-    #[inline] pub fn wait_one(&self, timeout: Duration) -> Result<bool> {
+    #[inline] fn wait(&self, timeout: Duration) -> Result<bool> {
         self.0.wait(Some(timeout), |v| *v).map(|g| *g)
     }
 
     #[inline]
-    pub fn reset(&mut self) -> Result<()> {
-        self.0.set_state(false)
+    fn set(&mut self) -> Result<()> {
+        self.0.set_state(true)
     }
 
     #[inline]
-    pub fn set(&mut self) -> Result<()> {
-        self.0.set_state(true)
+    fn reset(&mut self) -> Result<()> {
+        self.0.set_state(false)
     }
 }
 
 impl AutoResetEvent {
     #[inline]
     pub fn new() -> Self { Self::new_init(false) }
-    #[inline]
-    pub fn new_init(initial_state: bool) -> Self {
-        Self(WaitEvent::new_init(initial_state))
-    }
 
     #[inline]
-    pub fn wait_until_set(&self) -> Result<bool> {
+    fn new_init(initial_state: bool) -> Self {
+        Self(WaitEvent::new_init(initial_state))
+    }
+}
+
+impl SignalWaitable for AutoResetEvent {
+    #[inline]
+    fn wait_until_set(&self) -> Result<bool> {
         self.0.wait_reset(None, || false, |v| *v)
     }
 
-    #[inline] pub fn wait_one(&self, timeout: Duration) -> Result<bool> {
+    #[inline] fn wait(&self, timeout: Duration) -> Result<bool> {
         self.0.wait_reset(Some(timeout), || false, |v| *v)
     }
 
     #[inline]
-    pub fn reset(&mut self) -> Result<()> {
-        self.0.set_state(false)
+    fn set(&mut self) -> Result<()> {
+        self.0.set_state(true)
     }
 
     #[inline]
-    pub fn set(&mut self) -> Result<()> {
-        self.0.set_state(true)
+    fn reset(&mut self) -> Result<()> {
+        self.0.set_state(false)
     }
 }
 
@@ -184,31 +204,26 @@ impl<T> From<std::sync::PoisonError<T>> for WaitObjectError {
     }
 }
 
-mod conversion {
-    use super::{ WaitEvent, ManualResetEvent, AutoResetEvent };
-
-    impl From<WaitEvent<bool>> for ManualResetEvent {
-        fn from(value: WaitEvent<bool>) -> Self {
-            Self(value)
-        }
-    }
-
-    impl From<ManualResetEvent> for WaitEvent<bool> {
-        fn from(value: ManualResetEvent) -> Self {
-            value.0
-        }
-    }
-
-    impl From<WaitEvent<bool>> for AutoResetEvent {
-        fn from(value: WaitEvent<bool>) -> Self {
-            Self(value)
-        }
-    }
-
-    impl From<AutoResetEvent> for WaitEvent<bool> {
-        fn from(value: AutoResetEvent) -> Self {
-            value.0
-        }
-    }
+impl From<WaitEvent<bool>> for ManualResetEvent {
+    fn from(value: WaitEvent<bool>) -> Self {
+                                          Self(value)
+                                                     }
 }
-pub use conversion::*;
+
+impl From<ManualResetEvent> for WaitEvent<bool> {
+    fn from(value: ManualResetEvent) -> Self {
+                                           value.0
+                                                  }
+}
+
+impl From<WaitEvent<bool>> for AutoResetEvent {
+    fn from(value: WaitEvent<bool>) -> Self {
+                                          Self(value)
+                                                     }
+}
+
+impl From<AutoResetEvent> for WaitEvent<bool> {
+    fn from(value: AutoResetEvent) -> Self {
+                                         value.0
+                                                }
+}
