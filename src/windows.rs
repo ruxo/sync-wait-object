@@ -109,11 +109,11 @@ impl From<WIN32_ERROR> for WaitObjectError {
 }
 
 impl WaitEvent {
-    fn native_wait(&self, timeout: u32) -> Result<bool> {
+    fn native_wait(&self, timeout: u32) -> Result<()> {
         let ret = unsafe { WaitForSingleObject(self.0, timeout) };
         match ret {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
+            WAIT_OBJECT_0 => Ok(()),
+            WAIT_TIMEOUT => Err(WaitObjectError::Timeout),
             WAIT_FAILED => Err(get_last_error()),
             _ => unreachable!()
         }
@@ -127,11 +127,11 @@ impl HandleWrapper for WaitEvent {
 
 impl SignalWaitable for WaitEvent {
     #[inline]
-    fn wait_until_set(&self) -> Result<bool> {
+    fn wait_until_set(&self) -> Result<()> {
         self.native_wait(INFINITE)
     }
 
-    #[inline] fn wait(&self, timeout: Duration) -> Result<bool> {
+    #[inline] fn wait(&self, timeout: Duration) -> Result<()> {
         self.native_wait(timeout.as_millis() as u32)
     }
 

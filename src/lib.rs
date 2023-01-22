@@ -79,8 +79,8 @@ pub struct AutoResetEvent(WaitEvent<bool>);
 
 // Boolean signal with ability to wait and set state.
 pub trait SignalWaitable {
-    fn wait_until_set(&self) -> Result<bool>;
-    fn wait(&self, timeout: Duration) -> Result<bool>;
+    fn wait_until_set(&self) -> Result<()>;
+    fn wait(&self, timeout: Duration) -> Result<()>;
     fn set(&mut self) -> Result<()>;
     fn reset(&mut self) -> Result<()>;
 }
@@ -202,53 +202,28 @@ impl ManualResetEvent {
 }
 
 impl SignalWaitable for ManualResetEvent {
-    #[inline]
-    fn wait_until_set(&self) -> Result<bool> {
-        self.0.wait(None, |v| *v).map(|g| *g)
-    }
-
-    #[inline] fn wait(&self, timeout: Duration) -> Result<bool> {
-        self.0.wait(Some(timeout), |v| *v).map(|g| *g)
-    }
-
-    #[inline]
-    fn set(&mut self) -> Result<()> {
+    #[inline] fn wait_until_set(&self) -> Result<()> { self.0.wait(None, |v| *v).map(|_| ()) }
+    #[inline] fn wait(&self, timeout: Duration) -> Result<()> { self.0.wait(Some(timeout), |v| *v).map(|_| ()) }
+    #[inline] fn set(&mut self) -> Result<()> {
         self.0.set_state(true)
     }
-
-    #[inline]
-    fn reset(&mut self) -> Result<()> {
+    #[inline] fn reset(&mut self) -> Result<()> {
         self.0.set_state(false)
     }
 }
 
 impl AutoResetEvent {
-    #[inline]
-    pub fn new() -> Self { Self::new_init(false) }
-
-    #[inline]
-    pub fn new_init(initial_state: bool) -> Self {
-        Self(WaitEvent::new_init(initial_state))
-    }
+    #[inline] pub fn new() -> Self { Self::new_init(false) }
+    #[inline] pub fn new_init(initial_state: bool) -> Self { Self(WaitEvent::new_init(initial_state)) }
 }
 
 impl SignalWaitable for AutoResetEvent {
-    #[inline]
-    fn wait_until_set(&self) -> Result<bool> {
-        self.0.wait_reset(None, || false, |v| *v)
-    }
-
-    #[inline] fn wait(&self, timeout: Duration) -> Result<bool> {
-        self.0.wait_reset(Some(timeout), || false, |v| *v)
-    }
-
-    #[inline]
-    fn set(&mut self) -> Result<()> {
+    #[inline] fn wait_until_set(&self) -> Result<()> { self.0.wait_reset(None, || false, |v| *v).map(|_| ()) }
+    #[inline] fn wait(&self, timeout: Duration) -> Result<()> { self.0.wait_reset(Some(timeout), || false, |v| *v).map(|_| ()) }
+    #[inline] fn set(&mut self) -> Result<()> {
         self.0.set_state(true)
     }
-
-    #[inline]
-    fn reset(&mut self) -> Result<()> {
+    #[inline] fn reset(&mut self) -> Result<()> {
         self.0.set_state(false)
     }
 }
