@@ -172,6 +172,45 @@ impl<T> WaitEvent<T> {
         state.map(|mut g| mem::replace(g.deref_mut(), reset()))
     }
 
+    /// Synchronously change state of WaitObject by value
+    pub fn set_state(&mut self, new_state: T) -> Result<()> {
+        let (lock, cond) = self.0.deref();
+        let mut state = lock.lock()?;
+        *state = new_state;
+        cond.notify_all();
+        Ok(())
+    }
+
+    /// Synchronously change state of WaitObject by a function's return value
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::{time::Duration, thread};
+    /// use sync_wait_object::WaitEvent;
+    ///
+    /// let wait = WaitEvent::new_init(0);
+    /// let mut w1 = wait.clone();
+    /// let mut w2 = wait.clone();
+    /// let mut w3 = wait.clone();
+    ///
+    /// thread::spawn(move || w1.set_state_func(|v| v + 1));
+    /// thread::spawn(move || w2.set_state_func(|v| v + 1));
+    /// thread::spawn(move || w3.set_state_func(|v| v + 1));
+    ///
+    /// let result = *wait.wait(Some(Duration::from_millis(200)), |v| *v == 3).unwrap();
+    /// assert_eq!(result, 3);
+    /// ```
+    pub fn set_state_func<F>(&mut self, setter: F) -> Result<()>
+    where F: FnOnce(&T) -> T
+    {
+        let (lock, cond) = self.0.deref();
+        let mut state = lock.lock()?;
+        *state = setter(&*state);
+        cond.notify_all();
+        Ok(())
+    }
+
     fn create_waiter(timeout: Option<Duration>) -> impl Fn() -> bool {
         let start = time::Instant::now();
         move || {
@@ -180,14 +219,6 @@ impl<T> WaitEvent<T> {
                 None => true
             }
         }
-    }
-
-    pub fn set_state(&mut self, new_state: T) -> Result<()> {
-        let (lock, cond) = self.0.deref();
-        let mut state = lock.lock()?;
-        *state = new_state;
-        cond.notify_all();
-        Ok(())
     }
 }
 
